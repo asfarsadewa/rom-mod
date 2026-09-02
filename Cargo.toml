@@ -16,7 +16,7 @@ axum = "0.7"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 open = "5"
-rand = "0.8"
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
