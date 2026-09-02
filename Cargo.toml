@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "emulators"]
 
 [dependencies]
 anyhow = "1"
-axum = "0.7"
+axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 open = "5"
