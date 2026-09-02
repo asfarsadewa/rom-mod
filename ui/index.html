@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rom-mod</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="wordmark">rom<i>-</i>mod</span><span class="tagline">cheat workbench</span></div>
+  <div class="scan">
+    <input id="root" type="text" spellcheck="false" autocomplete="off" placeholder="Library folder, e.g. D:\ROM">
+    <button type="button" class="btn" id="scan">Scan</button>
+  </div>
+  <div class="bar-status" id="bar-status"></div>
+</header>
+<div class="layout">
+  <aside class="rail">
+    <div class="rail-head">
+      <input id="filter" type="search" placeholder="Filter" spellcheck="false">
+      <span id="count" class="count"></span>
+    </div>
+    <nav id="library" class="library"></nav>
+  </aside>
+  <main class="stage" id="stage">
+    <div class="empty">
+      <p class="empty-title">Pick a ROM</p>
+      <p class="empty-sub">Cheats come from the libretro database and are decoded against the exact bytes of your file before anything is written.</p>
+    </div>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
