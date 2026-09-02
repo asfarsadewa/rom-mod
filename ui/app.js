@@ -30,11 +30,16 @@ const hex = (n, w) => Number(n).toString(16).toUpperCase().padStart(w, '0');
 const hexBytes = arr => arr.map(b => hex(b, 2)).join(' ');
 const fmtSize = n => (n >= 1048576 ? `${(n / 1048576).toFixed(n % 1048576 ? 2 : 0)} MB` : `${Math.round(n / 1024)} KB`);
 
+const TOKEN = document.querySelector('meta[name="rom-mod-token"]')?.content || '';
+
 async function api(path, body) {
-  const init = body === undefined
-    ? {}
-    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
-  const r = await fetch(path, init);
+  const headers = { 'x-rom-mod-token': TOKEN };
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const r = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   let j;
   try { j = await r.json(); } catch { j = { error: `${r.status} ${r.statusText}` }; }
   if (!r.ok) throw new Error(j.error || `${r.status}`);

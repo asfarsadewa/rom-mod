@@ -140,6 +140,26 @@ fn safe_label(label: &str) -> String {
     }
 }
 
+/// A single file-name component: separators become spaces, control characters are
+/// dropped, and leading or trailing dots and spaces are trimmed so `..` cannot survive.
+fn safe_component(s: &str) -> Option<String> {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => ' ',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = cleaned.trim_matches(|c| c == '.' || c == ' ').to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 /// Collect the ROM operations for a list of codes, failing on anything that cannot be patched.
 pub fn collect_ops(rom: &Rom, code_list: &[String]) -> Result<Vec<RomOp>> {
     let mut ops = Vec::new();
@@ -285,6 +305,9 @@ pub fn write_retroarch_cht(
     if cheats.is_empty() {
         bail!("no cheats selected");
     }
+    let core = safe_component(core).ok_or_else(|| anyhow::anyhow!("invalid core name"))?;
+    let content_name =
+        safe_component(content_name).ok_or_else(|| anyhow::anyhow!("invalid content name"))?;
     let dir = retroarch_dir.join("cheats").join(core);
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{content_name}.cht"));
@@ -321,5 +344,21 @@ mod tests {
     fn labels_are_filename_safe() {
         assert_eq!(safe_label("Infinite lives: P1/P2?"), "Infinite lives P1 P2");
         assert_eq!(safe_label("   "), "Modded");
+    }
+
+    #[test]
+    fn path_components_reject_traversal() {
+        assert_eq!(
+            safe_component("Genesis Plus GX").as_deref(),
+            Some("Genesis Plus GX")
+        );
+        assert_eq!(
+            safe_component("Contra (USA) [Rev 1]").as_deref(),
+            Some("Contra (USA) [Rev 1]")
+        );
+        assert_eq!(safe_component("..").as_deref(), None);
+        assert_eq!(safe_component("../x").as_deref(), Some("x"));
+        assert_eq!(safe_component("a/b\\c").as_deref(), Some("a b c"));
+        assert_eq!(safe_component("   ").as_deref(), None);
     }
 }

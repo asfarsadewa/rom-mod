@@ -6,8 +6,9 @@ use crate::patch::{self, Decoded};
 use crate::rom::{self, Header, LibraryEntry, Platform, Rom, RomInfo};
 use anyhow::{anyhow, Result};
 use axum::{
-    extract::{Path as UrlPath, Query, State},
-    http::{header, StatusCode},
+    extract::{Path as UrlPath, Query, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -17,14 +18,71 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+const INDEX_HTML: &str = include_str!("../ui/index.html");
+const APP_CSS: &str = include_str!("../ui/app.css");
+const APP_JS: &str = include_str!("../ui/app.js");
+/// Header the UI must send with every API call. Its presence forces a CORS
+/// preflight for cross-origin callers, and its value is a per-session secret.
+const TOKEN_HEADER: &str = "x-rom-mod-token";
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 pub struct AppState {
     pub roots: Vec<PathBuf>,
     pub library: Vec<LibraryEntry>,
     pub roms: HashMap<String, Arc<Rom>>,
     pub retroarch_dir: Option<PathBuf>,
+    pub token: String,
 }
 
 type Shared = Arc<Mutex<AppState>>;
+
+fn new_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    rom::hex(&bytes)
+}
+
+fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+async fn require_token(State(s): State<Shared>, req: Request, next: Next) -> Response {
+    let expected = lock(&s).token.clone();
+    let given = req
+        .headers()
+        .get(TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !ct_eq(given, &expected) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "missing or invalid session token" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+pub fn router(state: Shared) -> Router {
+    let api = Router::new()
+        .route("/state", get(api_state))
+        .route("/scan", post(api_scan))
+        .route("/rom/:id", get(api_rom))
+        .route("/rom/:id/cheats", get(api_cheats))
+        .route("/rom/:id/decode", post(api_decode))
+        .route("/rom/:id/build", post(api_build))
+        .route("/rom/:id/cht", post(api_cht))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+    Router::new()
+        .route("/", get(index))
+        .route("/app.css", get(css))
+        .route("/app.js", get(js))
+        .nest("/api", api)
+        .with_state(state)
+}
 
 fn lock(s: &Shared) -> MutexGuard<'_, AppState> {
     s.lock().unwrap_or_else(|e| e.into_inner())
@@ -55,6 +113,12 @@ type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
 
 /// Find a RetroArch install by looking for retroarch.cfg in the usual places.
 pub fn detect_retroarch() -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os("ROM_MOD_RETROARCH") {
+        let p = PathBuf::from(v);
+        if p.join("retroarch.cfg").is_file() {
+            return Some(p);
+        }
+    }
     let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from(r"C:\RetroArch-Win64"),
         PathBuf::from(r"C:\RetroArch"),
@@ -95,19 +159,9 @@ pub async fn serve(roots: Vec<PathBuf>, port: u16, open_browser: bool) -> Result
         library,
         roms: HashMap::new(),
         retroarch_dir: detect_retroarch(),
+        token: new_token(),
     }));
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/app.css", get(css))
-        .route("/app.js", get(js))
-        .route("/api/state", get(api_state))
-        .route("/api/scan", post(api_scan))
-        .route("/api/rom/:id", get(api_rom))
-        .route("/api/rom/:id/cheats", get(api_cheats))
-        .route("/api/rom/:id/decode", post(api_decode))
-        .route("/api/rom/:id/build", post(api_build))
-        .route("/api/rom/:id/cht", post(api_cht))
-        .with_state(state);
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("rom-mod is listening on {url}");
@@ -118,21 +172,45 @@ pub async fn serve(roots: Vec<PathBuf>, port: u16, open_browser: bool) -> Result
     Ok(())
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../ui/index.html"))
+async fn index(State(s): State<Shared>) -> Response {
+    let token = lock(&s).token.clone();
+    let mut resp = Html(INDEX_HTML.replace("{{TOKEN}}", &token)).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
 }
 
 async fn css() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../ui/app.css"),
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        APP_CSS,
     )
 }
 
 async fn js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("../ui/app.js"),
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        APP_JS,
     )
 }
 
@@ -267,9 +345,25 @@ async fn api_cheats(
             Ok(m) => m,
             Err(e) => return (None, Vec::new(), Vec::new(), Some(e.to_string())),
         };
-        let chosen = want
-            .or_else(|| m.exact.clone())
-            .or_else(|| (m.candidates.len() == 1).then(|| m.candidates[0].clone()));
+        // Only names the index produced may be fetched; the query string is not trusted.
+        let chosen = match want {
+            Some(n) => {
+                if m.exact.as_deref() == Some(n.as_str()) || m.candidates.contains(&n) {
+                    Some(n)
+                } else {
+                    return (
+                        None,
+                        m.candidates,
+                        Vec::new(),
+                        Some("that entry is not among the candidates".to_string()),
+                    );
+                }
+            }
+            None => m
+                .exact
+                .clone()
+                .or_else(|| (m.candidates.len() == 1).then(|| m.candidates[0].clone())),
+        };
         match chosen {
             Some(n) => match cheatdb::fetch(platform, &n) {
                 Ok(c) => (Some(n), m.candidates, c, None),
@@ -406,4 +500,88 @@ async fn api_cht(
         path: path.display().to_string(),
         count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use tower::ServiceExt;
+
+    fn test_state() -> Shared {
+        Arc::new(Mutex::new(AppState {
+            roots: Vec::new(),
+            library: Vec::new(),
+            roms: HashMap::new(),
+            retroarch_dir: None,
+            token: "t0k3n".to_string(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn api_requires_the_session_token() {
+        let app = router(test_state());
+        let res = app
+            .clone()
+            .oneshot(HttpRequest::get("/api/state").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::get("/api/state")
+                    .header(TOKEN_HEADER, "wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let res = app
+            .oneshot(
+                HttpRequest::get("/api/state")
+                    .header(TOKEN_HEADER, "t0k3n")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn page_carries_token_and_security_headers() {
+        let app = router(test_state());
+        let res = app
+            .oneshot(HttpRequest::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            CSP
+        );
+        assert_eq!(
+            res.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+    }
+
+    #[test]
+    fn tokens_are_long_and_unique() {
+        let a = new_token();
+        let b = new_token();
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, b);
+        assert!(ct_eq(&a, &a));
+        assert!(!ct_eq(&a, &b));
+    }
 }

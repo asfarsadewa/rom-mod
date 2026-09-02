@@ -2,9 +2,13 @@
 name = "rom-mod"
 version = "0.1.0"
 edition = "2021"
-description = "A cheat-to-patch workbench for NES, Super NES and Mega Drive ROMs"
+rust-version = "1.82"
+description = "Cheat-to-patch workbench for NES, Super NES and Mega Drive ROM images"
 license = "MIT"
 repository = "https://github.com/asfarsadewa/rom-mod"
+readme = "README.md"
+keywords = ["rom", "cheats", "game-genie", "nes", "snes"]
+categories = ["command-line-utilities", "emulators"]
 
 [dependencies]
 anyhow = "1"
@@ -12,6 +16,7 @@ axum = "0.7"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 open = "5"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
@@ -19,6 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ureq = { version = "2", features = ["tls"] }
 walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 opt-level = 3

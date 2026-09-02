@@ -235,11 +235,15 @@ pub struct Rom {
     pub header: Header,
 }
 
+/// Largest image accepted, as a file or as an archive entry. Cartridge images are far
+/// smaller; the cap keeps a crafted archive from forcing a huge allocation.
+pub const MAX_ROM_BYTES: u64 = 64 << 20;
+
 fn zip_read(path: &Path) -> Result<(String, Vec<u8>)> {
     let f = fs::File::open(path)?;
     let mut za = zip::ZipArchive::new(f).context("not a readable zip archive")?;
     for i in 0..za.len() {
-        let mut e = za.by_index(i)?;
+        let e = za.by_index(i)?;
         if e.is_dir() {
             continue;
         }
@@ -248,8 +252,14 @@ fn zip_read(path: &Path) -> Result<(String, Vec<u8>)> {
         if !ROM_EXTS.contains(&ext.as_str()) {
             continue;
         }
+        if e.size() > MAX_ROM_BYTES {
+            bail!("{name} is larger than the {} MB limit", MAX_ROM_BYTES >> 20);
+        }
         let mut buf = Vec::with_capacity(e.size() as usize);
-        e.read_to_end(&mut buf)?;
+        e.take(MAX_ROM_BYTES + 1).read_to_end(&mut buf)?;
+        if buf.len() as u64 > MAX_ROM_BYTES {
+            bail!("{name} is larger than its declared size");
+        }
         return Ok((name, buf));
     }
     bail!("the archive contains no ROM file")
@@ -278,6 +288,16 @@ pub fn region_from_name(name: &str) -> String {
 
 pub fn load(path: &Path) -> Result<Rom> {
     let ext = ext_of(path);
+    let len = fs::metadata(path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .len();
+    if len > MAX_ROM_BYTES {
+        bail!(
+            "{} is larger than the {} MB limit",
+            path.display(),
+            MAX_ROM_BYTES >> 20
+        );
+    }
     let (data, entry) = if ext == "zip" {
         let (n, d) = zip_read(path)?;
         (d, Some(n))
